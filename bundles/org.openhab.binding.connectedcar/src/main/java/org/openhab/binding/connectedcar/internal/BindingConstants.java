@@ -51,6 +51,7 @@ public class BindingConstants {
     public static final String THING_SKODA_E = "skoda-e";
     public static final String THING_FORD = "ford";
     public static final String THING_WECHARGE = "wecharge";
+    public static final String THING_CUPRA = "cupra";
 
     public static final ThingTypeUID THING_TYPE_MYAUDI = new ThingTypeUID(BINDING_ID, THING_MYAUDI);
     public static final ThingTypeUID THING_TYPE_VW = new ThingTypeUID(BINDING_ID, THING_VOLKSWAGEN);
@@ -60,9 +61,11 @@ public class BindingConstants {
     public static final ThingTypeUID THING_TYPE_ENYAK = new ThingTypeUID(BINDING_ID, THING_SKODA_E);
     public static final ThingTypeUID THING_TYPE_FORD = new ThingTypeUID(BINDING_ID, THING_FORD);
     public static final ThingTypeUID THING_TYPE_WECHARGE = new ThingTypeUID(BINDING_ID, THING_WECHARGE);
+    public static final ThingTypeUID THING_TYPE_CUPRA = new ThingTypeUID(BINDING_ID, THING_CUPRA);
 
     public static final ThingTypeUID THING_TYPE_CNVEHICLE = new ThingTypeUID(BINDING_ID, "cnvehicle");
     public static final ThingTypeUID THING_TYPE_IDVEHICLE = new ThingTypeUID(BINDING_ID, "idvehicle");
+    public static final ThingTypeUID THING_TYPE_BORNVEHICLE = new ThingTypeUID(BINDING_ID, "bornvehicle");
     public static final ThingTypeUID THING_TYPE_GOPLUG = new ThingTypeUID(BINDING_ID, "goplug");
     public static final ThingTypeUID THING_TYPE_WCWALLBOX = new ThingTypeUID(BINDING_ID, "wcwallbox");
     public static final ThingTypeUID THING_TYPE_SKODAEVEHICLE = new ThingTypeUID(BINDING_ID, "sevehicle");
@@ -70,10 +73,12 @@ public class BindingConstants {
     public static final ThingTypeUID THING_TYPE_MMEVEHICLE = new ThingTypeUID(BINDING_ID, "mmevehicle");
 
     public static final Set<ThingTypeUID> SUPPORTED_THING_TYPES_UIDS = Collections
-            .unmodifiableSet(Stream.of(THING_TYPE_MYAUDI, THING_TYPE_VW, THING_TYPE_SKODA, THING_TYPE_SEAT,
-                    THING_TYPE_CNVEHICLE, THING_TYPE_ENYAK, THING_TYPE_SKODAEVEHICLE, THING_TYPE_FORD,
-                    THING_TYPE_FORDVEHICLE, THING_TYPE_VWID, THING_TYPE_IDVEHICLE, THING_TYPE_MMEVEHICLE,
-                    THING_TYPE_WECHARGE, THING_TYPE_WCWALLBOX).collect(Collectors.toSet()));
+            .unmodifiableSet(Stream
+                    .of(THING_TYPE_MYAUDI, THING_TYPE_VW, THING_TYPE_SKODA, THING_TYPE_SEAT, THING_TYPE_CNVEHICLE,
+                            THING_TYPE_ENYAK, THING_TYPE_SKODAEVEHICLE, THING_TYPE_FORD, THING_TYPE_FORDVEHICLE,
+                            THING_TYPE_VWID, THING_TYPE_IDVEHICLE, THING_TYPE_MMEVEHICLE, THING_TYPE_WECHARGE,
+                            THING_TYPE_WCWALLBOX, THING_TYPE_CUPRA, THING_TYPE_BORNVEHICLE)
+                    .collect(Collectors.toSet()));
 
     // List of all ChannelGroups and Channels
     public static final String CHANNEL_GROUP_GENERAL = "general";

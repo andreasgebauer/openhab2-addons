@@ -56,4 +56,10 @@
 
 		<config-description-ref uri="bridge-type:connectedcar:fordaccount"/>
 	</bridge-type>
+
+	<bridge-type id="cupra">
+		<label>CUPRA Born Account (WeConnect Cupra)</label>
+		<description>This thing represents a CUPRA Born account using the WeConnect Cupra backend.</description>
+		<config-description-ref uri="bridge-type:connectedcar:idaccount"/>
+	</bridge-type>
 </thing:thing-descriptions>

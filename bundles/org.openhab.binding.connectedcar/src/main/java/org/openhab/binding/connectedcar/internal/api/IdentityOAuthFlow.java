@@ -158,6 +158,26 @@ public class IdentityOAuthFlow extends ApiHttpMap {
             if (res.response.contains("\"hmac\":")) {
                 hmac = substringBetween(res.response, "\"hmac\":\"", "\",\"");
             }
+            // CUPRA / VW Group new style: relayState in window._IDK templateModel JSON
+            if (relayState.isEmpty() && res.response.contains("\"relayState\"")) {
+                String val = substringBetween(res.response, "\"relayState\": \"", "\"");
+                if (val.isEmpty()) {
+                    val = substringBetween(res.response, "\"relayState\":\"", "\"");
+                }
+                if (!val.isEmpty()) {
+                    relayState = val;
+                }
+            }
+            // CUPRA / VW Group new style: csrf_token in window._IDK JS object
+            if (csrf.isEmpty() && res.response.contains("csrf_token")) {
+                String val = substringBetween(res.response, "csrf_token: '", "'");
+                if (val.isEmpty()) {
+                    val = substringBetween(res.response, "csrf_token:'", "'");
+                }
+                if (!val.isEmpty()) {
+                    csrf = val;
+                }
+            }
         }
 
         if (!location.isEmpty()) {

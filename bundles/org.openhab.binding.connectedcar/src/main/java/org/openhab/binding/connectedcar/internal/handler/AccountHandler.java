@@ -42,6 +42,7 @@ import org.openhab.binding.connectedcar.internal.api.carnet.BrandCarNetAudi;
 import org.openhab.binding.connectedcar.internal.api.carnet.BrandCarNetSeat;
 import org.openhab.binding.connectedcar.internal.api.carnet.BrandCarNetSkoda;
 import org.openhab.binding.connectedcar.internal.api.carnet.BrandCarNetVW;
+import org.openhab.binding.connectedcar.internal.api.cupra.BrandCupra;
 import org.openhab.binding.connectedcar.internal.api.fordpass.BrandFordPass;
 import org.openhab.binding.connectedcar.internal.api.skodae.BrandSkodaE;
 import org.openhab.binding.connectedcar.internal.api.wecharge.BrandWeCharge;
@@ -100,6 +101,7 @@ public class AccountHandler extends BaseBridgeHandler implements ThingHandlerInt
         BRAND_MAP.put(THING_SKODA_E, API_BRAND_SKODA_E);
         BRAND_MAP.put(THING_FORD, API_BRAND_FORD);
         BRAND_MAP.put(THING_WECHARGE, API_BRAND_WECHARGE);
+        BRAND_MAP.put(THING_CUPRA, API_BRAND_CUPRA);
     }
 
     /**
@@ -255,6 +257,8 @@ public class AccountHandler extends BaseBridgeHandler implements ThingHandlerInt
                 return new BrandCarNetSkoda(this, httpClient, tokenManager, apiListener);
             case API_BRAND_SEAT:
                 return new BrandCarNetSeat(this, httpClient, tokenManager, apiListener);
+            case API_BRAND_CUPRA:
+                return new BrandCupra(this, httpClient, tokenManager, apiListener);
             case API_BRAND_SKODA_E:
                 return new BrandSkodaE(this, httpClient, tokenManager, apiListener);
             case API_BRAND_FORD:
