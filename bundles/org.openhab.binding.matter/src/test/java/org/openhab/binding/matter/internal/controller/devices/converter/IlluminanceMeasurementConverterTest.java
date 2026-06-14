@@ -17,6 +17,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
+import java.math.BigDecimal;
 import java.util.Map;
 
 import javax.measure.quantity.Illuminance;
@@ -38,7 +39,7 @@ import org.openhab.core.types.UnDefType;
 
 /**
  * Test class for IlluminanceMeasurementConverter
- * 
+ *
  * @author Dan Cunningham - Initial contribution
  */
 @NonNullByDefault
@@ -69,21 +70,35 @@ class IlluminanceMeasurementConverterTest extends BaseMatterConverterTest {
 
     @Test
     void testOnEventWithMeasuredValue() {
+        // measuredValue = 10001 → 10^((10001-1)/10000) = 10^1 = 10.0 lux
         AttributeChangedMessage message = new AttributeChangedMessage();
         message.path = new Path();
         message.path.attributeName = "measuredValue";
-        message.value = 100;
+        message.value = 10001;
         converter.onEvent(message);
         verify(mockHandler, times(1)).updateState(eq(1), eq("illuminancemeasurement-measuredvalue"),
-                eq(new QuantityType<Illuminance>(100, Units.LUX)));
+                eq(new QuantityType<Illuminance>(new BigDecimal("10.0"), Units.LUX)));
+    }
+
+    @Test
+    void testOnEventWithZeroValue() {
+        // measuredValue = 0 → below detection threshold → 0 lux
+        AttributeChangedMessage message = new AttributeChangedMessage();
+        message.path = new Path();
+        message.path.attributeName = "measuredValue";
+        message.value = 0;
+        converter.onEvent(message);
+        verify(mockHandler, times(1)).updateState(eq(1), eq("illuminancemeasurement-measuredvalue"),
+                eq(new QuantityType<Illuminance>(new BigDecimal("0"), Units.LUX)));
     }
 
     @Test
     void testInitState() {
-        mockCluster.measuredValue = 100;
+        // measuredValue = 20001 → 10^((20001-1)/10000) = 10^2 = 100.0 lux
+        mockCluster.measuredValue = 20001;
         converter.initState();
         verify(mockHandler, times(1)).updateState(eq(1), eq("illuminancemeasurement-measuredvalue"),
-                eq(new QuantityType<Illuminance>(100, Units.LUX)));
+                eq(new QuantityType<Illuminance>(new BigDecimal("100.0"), Units.LUX)));
     }
 
     @Test
