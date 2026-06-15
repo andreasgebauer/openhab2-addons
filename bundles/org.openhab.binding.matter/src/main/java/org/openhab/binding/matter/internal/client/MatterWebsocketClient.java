@@ -406,14 +406,13 @@ public class MatterWebsocketClient implements WebSocketListener, MatterWebsocket
 
     protected CompletableFuture<JsonElement> sendMessage(String namespace, String functionName, @Nullable Object args[],
             int timeoutSeconds) {
-        if (timeoutSeconds <= 0) {
-            timeoutSeconds = REQUEST_TIMEOUT_SECONDS;
-        }
+        final int effectiveTimeout = timeoutSeconds > 0 ? timeoutSeconds : REQUEST_TIMEOUT_SECONDS;
         CompletableFuture<JsonElement> responseFuture = new CompletableFuture<>();
 
         Session session = this.session;
         if (session == null) {
             logger.debug("Could not send {} {} : no valid session", namespace, functionName);
+            responseFuture.completeExceptionally(new Exception("No valid WebSocket session"));
             return responseFuture;
         }
         String requestId = UUID.randomUUID().toString();
@@ -428,9 +427,9 @@ public class MatterWebsocketClient implements WebSocketListener, MatterWebsocket
             CompletableFuture<JsonElement> future = pendingRequests.remove(requestId);
             if (future != null && !future.isDone()) {
                 future.completeExceptionally(new TimeoutException(String.format(
-                        "Request %s:%s timed out after %d seconds", namespace, functionName, REQUEST_TIMEOUT_SECONDS)));
+                        "Request %s:%s timed out after %d seconds", namespace, functionName, effectiveTimeout)));
             }
-        }, timeoutSeconds, TimeUnit.SECONDS);
+        }, effectiveTimeout, TimeUnit.SECONDS);
 
         return responseFuture;
     }
