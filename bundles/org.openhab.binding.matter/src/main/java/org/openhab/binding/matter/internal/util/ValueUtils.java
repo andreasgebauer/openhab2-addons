@@ -99,15 +99,12 @@ public class ValueUtils {
 
     /**
      * Converts a Matter IlluminanceMeasurement measuredValue to lux (Matter spec §2.2.5.1:
-     * measuredValue = 10000 * log10(lux) + 1; measuredValue == 0 means below detection threshold).
+     * measuredValue = 10000 * log10(lux) + 1).
      *
      * @param value the raw Matter measuredValue integer
      * @return the illuminance as a {@link QuantityType} in lux
      */
     public static QuantityType<Illuminance> valueToIlluminance(int value) {
-        if (value == 0) {
-            return new QuantityType<>(0, Units.LUX);
-        }
         double lux = Math.pow(10.0, (value - 1) / 10000.0);
         return new QuantityType<>(BigDecimal.valueOf(lux).setScale(1, RoundingMode.HALF_UP), Units.LUX);
     }
