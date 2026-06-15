@@ -1,12 +1,17 @@
 // Include this first to auto-register Crypto, Network and Time Node.js implementations
 import { Environment, Logger, StorageContext } from "@matter/general";
-import { NodeId } from "@matter/types";
+import { ClusterId, NodeId } from "@matter/types";
 import { CommissioningController, ControllerStore } from "@project-chip/matter.js";
 import { Endpoint, NodeStates, PairedNode } from "@project-chip/matter.js/device";
 import { WebSocketSession } from "../app";
 import { EventType, NodeState } from "../MessageTypes";
 import { printError } from "../util/error";
 const logger = Logger.get("ControllerNode");
+
+// ICD Management cluster ID (Matter spec cluster 0x0046)
+const ICD_MANAGEMENT_CLUSTER_ID = ClusterId(0x0046);
+// Multiplier over idleModeDuration before triggering a reconnect
+const ICD_RECONNECT_MULTIPLIER = 2;
 
 /**
  * This class represents the Matter Controller / Admin client
@@ -16,6 +21,10 @@ export class ControllerNode {
     private storageContext?: StorageContext;
     private nodes: Map<NodeId, PairedNode> = new Map();
     commissioningController?: CommissioningController;
+    // Per-node last-activity timestamp (ms), only tracked for ICD nodes
+    private nodeLastActivity: Map<NodeId, number> = new Map();
+    // Per-node reconnect watchdog timer handles
+    private nodeIcdTimers: Map<NodeId, ReturnType<typeof setTimeout>> = new Map();
 
     constructor(
         private readonly storageLocation: string,
@@ -36,8 +45,56 @@ export class ControllerNode {
      * Closes the controller node
      */
     async close() {
+        this.nodeIcdTimers.forEach(timer => clearTimeout(timer));
+        this.nodeIcdTimers.clear();
+        this.nodeLastActivity.clear();
         await this.commissioningController?.close();
         this.nodes.clear();
+    }
+
+    /**
+     * Reads the idleModeDuration (seconds) from the ICD Management cluster on endpoint 0,
+     * or returns undefined if the node is not an ICD.
+     */
+    private async getIcdIdleModeDuration(node: PairedNode): Promise<number | undefined> {
+        const rootEndpoint = node.getRootEndpoint();
+        if (!rootEndpoint) return undefined;
+        const icdCluster = rootEndpoint.getClusterClientById(ICD_MANAGEMENT_CLUSTER_ID);
+        if (!icdCluster) return undefined;
+        const raw = (icdCluster.attributes as any)["idleModeDuration"];
+        if (!raw) return undefined;
+        try {
+            // get() returns cached value after initializedFromRemote without a network round-trip
+            const value = await raw.get();
+            if (typeof value === "number" && value > 0) return value;
+        } catch (e) {
+            logger.debug(`Could not read ICD idleModeDuration for node ${node.nodeId}: ${e}`);
+        }
+        return undefined;
+    }
+
+    /**
+     * Arms (or re-arms) a reconnect watchdog for an ICD node.
+     * Fires after idleModeDuration * ICD_RECONNECT_MULTIPLIER seconds of silence.
+     */
+    private armIcdTimer(node: PairedNode, idleModeDurationSecs: number) {
+        const nodeId = node.nodeId;
+        const existing = this.nodeIcdTimers.get(nodeId);
+        if (existing) clearTimeout(existing);
+
+        const delayMs = idleModeDurationSecs * ICD_RECONNECT_MULTIPLIER * 1000;
+        const timer = setTimeout(() => {
+            this.nodeIcdTimers.delete(nodeId);
+            if (!this.nodes.has(nodeId)) return; // node was removed
+            const silentSecs = Math.round((Date.now() - (this.nodeLastActivity.get(nodeId) ?? 0)) / 1000);
+            logger.warn(
+                `ICD node ${nodeId} silent for ${silentSecs}s (>${idleModeDurationSecs * ICD_RECONNECT_MULTIPLIER}s), triggering reconnect`,
+            );
+            node.triggerReconnect();
+            // Re-arm so we keep retrying if the reconnect doesn't immediately succeed
+            this.armIcdTimer(node, idleModeDurationSecs);
+        }, delayMs);
+        this.nodeIcdTimers.set(nodeId, timer);
     }
 
     /**
@@ -137,15 +194,35 @@ export class ControllerNode {
         this.nodes.set(node.nodeId, node);
 
         // register event listeners once the node is fully connected
-        node.events.initializedFromRemote.once(() => {
+        node.events.initializedFromRemote.once(async () => {
+            // Arm ICD reconnect watchdog if this node has an ICD Management cluster
+            const idleModeDurationSecs = await this.getIcdIdleModeDuration(node);
+            if (idleModeDurationSecs !== undefined) {
+                logger.info(
+                    `Node ${node.nodeId} is an ICD with idleModeDuration=${idleModeDurationSecs}s, arming reconnect watchdog`,
+                );
+                this.nodeLastActivity.set(node.nodeId, Date.now());
+                this.armIcdTimer(node, idleModeDurationSecs);
+            }
+
             node.events.attributeChanged.on(data => {
                 data.path.nodeId = node.nodeId;
                 this.ws.sendEvent(EventType.AttributeChanged, data);
+                // Reset ICD watchdog on any activity
+                if (idleModeDurationSecs !== undefined) {
+                    this.nodeLastActivity.set(node.nodeId, Date.now());
+                    this.armIcdTimer(node, idleModeDurationSecs);
+                }
             });
 
             node.events.eventTriggered.on(data => {
                 data.path.nodeId = node.nodeId;
                 this.ws.sendEvent(EventType.EventTriggered, data);
+                // Reset ICD watchdog on any activity
+                if (idleModeDurationSecs !== undefined) {
+                    this.nodeLastActivity.set(node.nodeId, Date.now());
+                    this.armIcdTimer(node, idleModeDurationSecs);
+                }
             });
 
             node.events.stateChanged.on(info => {
@@ -165,6 +242,13 @@ export class ControllerNode {
             });
 
             node.events.decommissioned.on(() => {
+                // Cancel ICD watchdog when node is decommissioned
+                const timer = this.nodeIcdTimers.get(node.nodeId);
+                if (timer) {
+                    clearTimeout(timer);
+                    this.nodeIcdTimers.delete(node.nodeId);
+                }
+                this.nodeLastActivity.delete(node.nodeId);
                 this.nodes.delete(node.nodeId);
                 const data: any = {
                     nodeId: node.nodeId,
