@@ -374,6 +374,17 @@ public class MatterWebsocketClient implements WebSocketListener, MatterWebsocket
                             listener.onReady();
                         }
                         break;
+                    case "subscriptionEstablished":
+                        logger.info("matter-subscription event=established data={}", event.data);
+                        dispatchSubscriptionAlive(event.data);
+                        break;
+                    case "subscriptionAlive":
+                        logger.debug("matter-subscription event=alive data={}", event.data);
+                        dispatchSubscriptionAlive(event.data);
+                        break;
+                    case "subscriptionTimedOut":
+                        logger.warn("matter-subscription event=timed_out data={}", event.data);
+                        break;
                     default:
                         break;
                 }
@@ -556,6 +567,30 @@ public class MatterWebsocketClient implements WebSocketListener, MatterWebsocket
     }
 
     @NonNullByDefault({})
+    private void dispatchSubscriptionAlive(@Nullable JsonElement data) {
+        if (data == null || !data.isJsonObject()) {
+            return;
+        }
+        JsonElement nodeIdEl = data.getAsJsonObject().get("nodeId");
+        if (nodeIdEl == null) {
+            return;
+        }
+        BigInteger nodeId;
+        try {
+            nodeId = new BigInteger(nodeIdEl.getAsString());
+        } catch (NumberFormatException e) {
+            logger.debug("dispatchSubscriptionAlive: invalid nodeId {}", nodeIdEl);
+            return;
+        }
+        for (MatterClientListener listener : clientListeners) {
+            try {
+                listener.onSubscriptionAlive(nodeId);
+            } catch (Exception e) {
+                logger.debug("Error notifying listener of SubscriptionAlive", e);
+            }
+        }
+    }
+
     class AttributeChangedMessageDeserializer implements JsonDeserializer<AttributeChangedMessage> {
         @Override
         public @Nullable AttributeChangedMessage deserialize(JsonElement json, Type typeOfT,

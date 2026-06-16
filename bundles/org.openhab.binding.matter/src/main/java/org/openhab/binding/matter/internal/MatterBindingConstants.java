@@ -30,6 +30,8 @@ public class MatterBindingConstants {
     public static final ThingTypeUID THING_TYPE_NODE = new ThingTypeUID(BINDING_ID, "node");
     public static final ThingTypeUID THING_TYPE_ENDPOINT = new ThingTypeUID(BINDING_ID, "endpoint");
     public static final String CONFIG_DESCRIPTION_URI_THING_PREFIX = "thing";
+    // Controller diagnostic channels
+    public static final String CHANNEL_ID_CONTROLLER_LAST_SUBSCRIPTION_ALIVE = "last-subscription-alive";
     // List of Channel UIDs
     public static final String CHANNEL_ID_AIRQUALITY_AIRQUALITY = "airquality-airquality";
     public static final ChannelTypeUID CHANNEL_AIRQUALITY_AIRQUALITY = new ChannelTypeUID(BINDING_ID,

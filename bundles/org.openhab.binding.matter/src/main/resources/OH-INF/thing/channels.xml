@@ -571,6 +571,14 @@
 		</tags>
 	</channel-type>
 
+	<channel-type id="controller-last-subscription-alive" advanced="true">
+		<item-type>DateTime</item-type>
+		<label>Last Subscription Alive</label>
+		<description>Timestamp of the last subscription keep-alive received from any node — updates roughly every node's negotiated maxInterval (typically every 30 min for sleepy ICDs). Used as the watchdog's freshness signal.</description>
+		<category>Time</category>
+		<state pattern="%1$tY-%1$tm-%1$td %1$tH:%1$tM:%1$tS" readOnly="true"/>
+	</channel-type>
+
 	<channel-type id="airquality-airquality">
 		<item-type>Number</item-type>
 		<label>Air Quality</label>

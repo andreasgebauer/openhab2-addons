@@ -7,6 +7,9 @@
 	<bridge-type id="controller">
 		<label>Matter Controller</label>
 		<description>The Matter controller connects to Matter nodes and devices</description>
+		<channels>
+			<channel id="last-subscription-alive" typeId="controller-last-subscription-alive"/>
+		</channels>
 		<config-description>
 			<parameter name="nodeId" type="text" required="true">
 				<label>Node ID</label>

@@ -49,7 +49,10 @@ import org.openhab.binding.matter.internal.util.TranslationService;
 import org.openhab.core.OpenHAB;
 import org.openhab.core.i18n.LocaleProvider;
 import org.openhab.core.i18n.TranslationProvider;
+import org.openhab.core.library.CoreItemFactory;
+import org.openhab.core.library.types.DateTimeType;
 import org.openhab.core.thing.Bridge;
+import org.openhab.core.thing.Channel;
 import org.openhab.core.thing.ChannelUID;
 import org.openhab.core.thing.Thing;
 import org.openhab.core.thing.ThingStatus;
@@ -58,6 +61,9 @@ import org.openhab.core.thing.ThingUID;
 import org.openhab.core.thing.binding.BaseBridgeHandler;
 import org.openhab.core.thing.binding.ThingHandler;
 import org.openhab.core.thing.binding.ThingHandlerService;
+import org.openhab.core.thing.binding.builder.BridgeBuilder;
+import org.openhab.core.thing.binding.builder.ChannelBuilder;
+import org.openhab.core.thing.type.ChannelTypeUID;
 import org.openhab.core.types.Command;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -108,7 +114,29 @@ public class ControllerHandler extends BaseBridgeHandler implements MatterClient
     @Override
     public void initialize() {
         logger.debug("initialize");
+        ensureDiagnosticChannels();
         connect();
+    }
+
+    /**
+     * Adds diagnostic channels to the controller Thing if they are not already
+     * present. Required so that controllers commissioned before these channels
+     * existed in the thing-type pick them up at runtime without manual re-creation.
+     */
+    private void ensureDiagnosticChannels() {
+        ChannelUID lastAliveUID = new ChannelUID(getThing().getUID(), CHANNEL_ID_CONTROLLER_LAST_SUBSCRIPTION_ALIVE);
+        if (getThing().getChannel(lastAliveUID) != null) {
+            return;
+        }
+        Channel lastAliveChannel = ChannelBuilder.create(lastAliveUID, CoreItemFactory.DATETIME)
+                .withType(new ChannelTypeUID(BINDING_ID, "controller-" + CHANNEL_ID_CONTROLLER_LAST_SUBSCRIPTION_ALIVE))
+                .build();
+        BridgeBuilder builder = BridgeBuilder.create(getThing().getThingTypeUID(), getThing().getUID())
+                .withChannels(lastAliveChannel).withConfiguration(getThing().getConfiguration())
+                .withLabel(getThing().getLabel()).withLocation(getThing().getLocation())
+                .withProperties(getThing().getProperties());
+        updateThing(builder.build());
+        logger.info("Added diagnostic channel {} to controller Thing", lastAliveUID);
     }
 
     @Override
@@ -249,6 +277,11 @@ public class ControllerHandler extends BaseBridgeHandler implements MatterClient
 
     @Override
     public void onEvent(BridgeEventMessage message) {
+    }
+
+    @Override
+    public void onSubscriptionAlive(BigInteger nodeId) {
+        updateState(CHANNEL_ID_CONTROLLER_LAST_SUBSCRIPTION_ALIVE, new DateTimeType());
     }
 
     @Override

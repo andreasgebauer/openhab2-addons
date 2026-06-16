@@ -41,4 +41,12 @@ public interface MatterClientListener {
     public void onEvent(BridgeEventMessage message);
 
     public void onEvent(NodeDataMessage message);
+
+    /**
+     * A subscription keep-alive event arrived for a node — emitted on every matter.js
+     * connectionAlive (every subscription update or maxInterval keepalive). Used as
+     * the canonical "subscription is healthy" signal for diagnostics.
+     */
+    public default void onSubscriptionAlive(java.math.BigInteger nodeId) {
+    }
 }
