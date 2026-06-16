@@ -10,8 +10,11 @@ const logger = Logger.get("ControllerNode");
 
 // ICD Management cluster ID (Matter spec cluster 0x0046)
 const ICD_MANAGEMENT_CLUSTER_ID = ClusterId(0x0046);
-// Multiplier over idleModeDuration before triggering a reconnect
-const ICD_RECONNECT_MULTIPLIER = 2;
+// Multiplier over idleModeDuration before declaring the subscription stale
+// (matter.js's own updateTimeoutHandler resubscribes on maxInterval expiry; this
+// timer is for *telemetry* — we just want to detect and report stale subscriptions,
+// not to act on them, because triggerReconnect cannot wake a sleeping device.)
+const ICD_SILENCE_MULTIPLIER = 1.5;
 
 /**
  * This class represents the Matter Controller / Admin client
@@ -74,24 +77,35 @@ export class ControllerNode {
     }
 
     /**
-     * Arms (or re-arms) a reconnect watchdog for an ICD node.
-     * Fires after idleModeDuration * ICD_RECONNECT_MULTIPLIER seconds of silence.
+     * Arms (or re-arms) a silence-detection timer for an ICD node.
+     * Fires after idleModeDuration * ICD_SILENCE_MULTIPLIER seconds of silence
+     * and emits a SubscriptionTimedOut event for telemetry.
+     *
+     * Does NOT call triggerReconnect: matter.js's own updateTimeoutHandler
+     * already calls subscribeAllAttributesAndEvents() on subscription max-interval
+     * expiry, and triggerReconnect cannot wake a sleeping device anyway. Our
+     * timer just observes that the subscription has gone silent so the operator
+     * (or a future RegisterClient-based recovery path) can act on it.
      */
     private armIcdTimer(node: PairedNode, idleModeDurationSecs: number) {
         const nodeId = node.nodeId;
         const existing = this.nodeIcdTimers.get(nodeId);
         if (existing) clearTimeout(existing);
 
-        const delayMs = idleModeDurationSecs * ICD_RECONNECT_MULTIPLIER * 1000;
+        const thresholdSecs = Math.round(idleModeDurationSecs * ICD_SILENCE_MULTIPLIER);
+        const delayMs = thresholdSecs * 1000;
         const timer = setTimeout(() => {
             this.nodeIcdTimers.delete(nodeId);
             if (!this.nodes.has(nodeId)) return; // node was removed
             const silentSecs = Math.round((Date.now() - (this.nodeLastActivity.get(nodeId) ?? 0)) / 1000);
-            logger.warn(
-                `ICD node ${nodeId} silent for ${silentSecs}s (>${idleModeDurationSecs * ICD_RECONNECT_MULTIPLIER}s), triggering reconnect`,
-            );
-            node.triggerReconnect();
-            // Re-arm so we keep retrying if the reconnect doesn't immediately succeed
+            logger.warn(`ICD node ${nodeId} silent for ${silentSecs}s (>${thresholdSecs}s)`);
+            this.ws.sendEvent(EventType.SubscriptionTimedOut, {
+                nodeId: nodeId,
+                silentSecs: silentSecs,
+                thresholdSecs: thresholdSecs,
+            });
+            // Re-arm so we keep emitting telemetry if matter.js's own recovery
+            // path is taking multiple cycles to succeed
             this.armIcdTimer(node, idleModeDurationSecs);
         }, delayMs);
         this.nodeIcdTimers.set(nodeId, timer);
@@ -195,6 +209,13 @@ export class ControllerNode {
 
         // register event listeners once the node is fully connected
         node.events.initializedFromRemote.once(async () => {
+            // Emit subscription-established telemetry with the negotiated max interval
+            const maxIntervalSecs = node.currentSubscriptionIntervalSeconds;
+            this.ws.sendEvent(EventType.SubscriptionEstablished, {
+                nodeId: node.nodeId,
+                maxIntervalSecs: maxIntervalSecs,
+            });
+
             // Arm ICD reconnect watchdog if this node has an ICD Management cluster
             const idleModeDurationSecs = await this.getIcdIdleModeDuration(node);
             if (idleModeDurationSecs !== undefined) {
@@ -204,6 +225,20 @@ export class ControllerNode {
                 this.nodeLastActivity.set(node.nodeId, Date.now());
                 this.armIcdTimer(node, idleModeDurationSecs);
             }
+
+            // connectionAlive fires on every subscription keep-alive (every maxInterval seconds),
+            // independent of whether any attribute actually changed. This is the canonical
+            // "subscription is healthy" signal.
+            node.events.connectionAlive.on(() => {
+                this.ws.sendEvent(EventType.SubscriptionAlive, {
+                    nodeId: node.nodeId,
+                    maxIntervalSecs: node.currentSubscriptionIntervalSeconds,
+                });
+                if (idleModeDurationSecs !== undefined) {
+                    this.nodeLastActivity.set(node.nodeId, Date.now());
+                    this.armIcdTimer(node, idleModeDurationSecs);
+                }
+            });
 
             node.events.attributeChanged.on(data => {
                 data.path.nodeId = node.nodeId;

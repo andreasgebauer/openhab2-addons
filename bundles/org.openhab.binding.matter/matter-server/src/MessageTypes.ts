@@ -23,6 +23,9 @@ export enum EventType {
     NodeStateInformation = "nodeStateInformation",
     NodeData = "nodeData",
     BridgeEvent = "bridgeEvent",
+    SubscriptionEstablished = "subscriptionEstablished",
+    SubscriptionAlive = "subscriptionAlive",
+    SubscriptionTimedOut = "subscriptionTimedOut",
 }
 
 export interface Message {
