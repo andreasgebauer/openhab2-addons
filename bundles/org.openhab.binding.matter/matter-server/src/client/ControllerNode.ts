@@ -45,6 +45,39 @@ export class ControllerNode {
     // avoiding duplicate handlers (and duplicate WebSocket events) when the same node instance
     // is reused across reconnections.
     private nodeObservers: Map<NodeId, ObserverGroup> = new Map();
+    // Wedge self-heal: per-node timestamp (ms) of the last subscription liveness signal.
+    // PairedNode `connectionAlive` fires on every subscription update, including the periodic
+    // maxInterval keep-alive, so it is the true "subscription is alive" signal (independent of
+    // whether any attribute actually changed). Crucially it does NOT fire on bootstrap/reconnect
+    // reads (matter.js NetworkClient guards it behind an active subscriptionId), so it is immune to
+    // the read-back bursts a reconnect produces - a real "is the live subscription delivering?"
+    // signal. If a node stays Connected but stops signalling, matter.js's own resubscribe
+    // (InteractionClient updateTimeoutHandler) has failed to fire - observed with IKEA sleepy ICD
+    // sensors (MYGGSPRAY/MYGGBETT): the device stays reachable and keeps sending UDP 5540 packets to
+    // the host and updating other fabrics (Google/Alexa) while openHAB receives nothing.
+    //
+    // Recovery escalation (proven necessary 2026-06-19): a per-node triggerReconnect does NOT clear
+    // a *hard* wedge - the openHAB binding's "controller restart" (Thing disable/enable) only bounces
+    // the websocket to this same, persistent Node.js process, so the wedged matter.js engine survives
+    // it. Measured: a 2.5 h wedge survived 3 triggerReconnects + 3 controller restarts while the
+    // devices sent 60+ packets/15 min. The only thing that clears it is restarting this Node process.
+    // So the watchdog first tries the light triggerReconnect, and if the subscription is STILL silent
+    // a grace window later, it calls process.exit(1): MatterWebsocketService.waitFor() sees the exit
+    // and respawns a fresh matter.js engine (~10 s), which re-subscribes cleanly.
+    private nodeLastAlive: Map<NodeId, number> = new Map();
+    private nodeLastReconnect: Map<NodeId, number> = new Map();
+    private wedgeWatchdog?: NodeJS.Timeout;
+    // No subscription update within this window on a still-Connected node => wedged. Must exceed
+    // the negotiated subscription maxInterval (observed ~15m39s for these IKEA sensors) plus margin.
+    // Tunable; watch the matter.js log for `connectionAlive` cadence to refine.
+    private static readonly WEDGE_TIMEOUT_MS = 20 * 60 * 1000;
+    // Do not re-trigger a reconnect for the same node more often than this.
+    private static readonly WEDGE_RECONNECT_COOLDOWN_MS = 10 * 60 * 1000;
+    // After triggering the light reconnect, allow this long for `connectionAlive` to resume before
+    // escalating to a full process restart. Sized for an awake device's CASE re-handshake + first
+    // subscription report; if it has not delivered by then the wedge is hard, not transient.
+    private static readonly WEDGE_RESTART_GRACE_MS = 4 * 60 * 1000;
+    private static readonly WEDGE_CHECK_INTERVAL_MS = 60 * 1000;
     commissioningController?: CommissioningController;
     private observers?: ObserverGroup;
     #services?: SharedEnvironmentServices;
@@ -81,6 +114,10 @@ export class ControllerNode {
      * Closes the controller node
      */
     async close() {
+        if (this.wedgeWatchdog) {
+            clearInterval(this.wedgeWatchdog);
+            this.wedgeWatchdog = undefined;
+        }
         try {
             for (const observers of this.nodeObservers.values()) {
                 observers.close();
@@ -94,6 +131,8 @@ export class ControllerNode {
             await this.#services?.close();
             this.#services = undefined;
             this.nodes.clear();
+            this.nodeLastAlive.clear();
+            this.nodeLastReconnect.clear();
         }
     }
 
@@ -219,6 +258,72 @@ export class ControllerNode {
                 });
             }
         }
+
+        this.startWedgeWatchdog();
+    }
+
+    /**
+     * Wedge self-heal watchdog. Periodically checks every Connected node for a stalled subscription
+     * (no `connectionAlive` within WEDGE_TIMEOUT_MS). Two-stage recovery:
+     *   1. Light reconnect (triggerReconnect) - rebuilds the CASE session + subscription in-process.
+     *      Clears transient stalls cheaply, without disturbing the other nodes or the controller.
+     *   2. If `connectionAlive` is still silent WEDGE_RESTART_GRACE_MS after that reconnect, the wedge
+     *      is hard (the matter.js engine itself is stuck; a reconnect/websocket bounce cannot clear
+     *      it - confirmed 2026-06-19). Escalate to process.exit(1); MatterWebsocketService respawns a
+     *      fresh Node process and re-subscribes all nodes cleanly. This is the in-process equivalent
+     *      of the openHAB-side node-PID-kill backstop, but faster and keyed off the reliable
+     *      `connectionAlive` signal (immune to reconnect read-back bursts).
+     * The alive marker is deliberately NOT refreshed on a reconnect attempt, so a reconnect that
+     * superficially succeeds (node returns to Connected) but fails to resume real subscription
+     * delivery still escalates to the process restart.
+     */
+    private startWedgeWatchdog() {
+        if (this.wedgeWatchdog) {
+            clearInterval(this.wedgeWatchdog);
+        }
+        this.wedgeWatchdog = setInterval(() => {
+            const now = Date.now();
+            for (const [nodeId, node] of this.nodes) {
+                if (node.connectionState !== NodeStates.Connected) {
+                    continue;
+                }
+                const lastAlive = this.nodeLastAlive.get(nodeId) ?? 0;
+                if (lastAlive === 0 || now - lastAlive < ControllerNode.WEDGE_TIMEOUT_MS) {
+                    continue;
+                }
+                const staleMin = Math.round((now - lastAlive) / 60000);
+                const lastReconnect = this.nodeLastReconnect.get(nodeId) ?? 0;
+
+                // Stage 2: a light reconnect was already attempted and the subscription is still
+                // silent a grace window later => hard wedge. Only a fresh matter.js process recovers
+                // it, so exit and let MatterWebsocketService respawn one.
+                if (lastReconnect !== 0 && now - lastReconnect >= ControllerNode.WEDGE_RESTART_GRACE_MS) {
+                    logger.warn(
+                        `Wedge watchdog: node ${nodeId} still silent ${staleMin} min after reconnect - matter.js engine is wedged, restarting the matter-server process (process.exit) so the binding respawns a clean one`,
+                    );
+                    // Flush logs before the process dies, then exit non-zero so the binding's
+                    // waitFor()/scheduledStart() path respawns us (vs a clean SHUTTING_DOWN shutdown).
+                    process.exitCode = 1;
+                    process.exit(1);
+                }
+
+                // Stage 1: first detection of this wedge episode (or the reconnect cooldown lapsed) =>
+                // try the light in-process reconnect before escalating.
+                if (lastReconnect === 0 || now - lastReconnect >= ControllerNode.WEDGE_RECONNECT_COOLDOWN_MS) {
+                    logger.warn(
+                        `Wedge watchdog: node ${nodeId} Connected but no subscription update for ${staleMin} min - forcing reconnect/resubscribe`,
+                    );
+                    this.nodeLastReconnect.set(nodeId, now);
+                    try {
+                        node.triggerReconnect();
+                    } catch (e) {
+                        logger.error(`Wedge watchdog: triggerReconnect failed for node ${nodeId}: ${e}`);
+                    }
+                }
+            }
+        }, ControllerNode.WEDGE_CHECK_INTERVAL_MS);
+        // Do not keep the Node.js event loop alive solely for this timer.
+        this.wedgeWatchdog.unref?.();
     }
 
     /**
@@ -317,6 +422,17 @@ export class ControllerNode {
         // Remove any listeners left over from a previous registration of this same node instance
         // (e.g. after a decommission/re-commission cycle) so handlers do not accumulate.
         const observers = this.resetNodeObservers(node.nodeId);
+
+        // Track subscription liveness for the wedge self-heal watchdog. Seed it now so a freshly
+        // registered node gets a full WEDGE_TIMEOUT_MS grace before it can be considered wedged.
+        this.nodeLastAlive.set(node.nodeId, Date.now());
+        observers.on(node.events.connectionAlive, () => {
+            this.nodeLastAlive.set(node!.nodeId, Date.now());
+            // Liveness resumed: clear any in-progress wedge escalation so the next episode starts
+            // fresh with the light reconnect before escalating to a process restart.
+            this.nodeLastReconnect.delete(node!.nodeId);
+            logger.debug(`connectionAlive node ${node!.nodeId}`);
+        });
 
         observers.on(node.events.stateChanged, info => {
             this.ws.sendEvent(EventType.NodeStateInformation, {
