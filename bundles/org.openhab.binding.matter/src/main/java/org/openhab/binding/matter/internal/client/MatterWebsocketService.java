@@ -255,7 +255,13 @@ public class MatterWebsocketService {
                         }
                     }, STARTUP_DELAY_SECONDS, TimeUnit.SECONDS);
                 }
-                if (logger.isTraceEnabled()) {
+                // [rx-instr] DIAGNOSTIC: surface receive-pipeline instrumentation at INFO so the wedge
+                // heartbeat/diagnostics can be captured without enabling flood-level TRACE on this
+                // logger. Remove together with the matter.js "[rx-instr]" instrumentation.
+                if (line.contains("[rx-instr]")) {
+                    Matcher matcher = LOG_PATTERN.matcher(line);
+                    logger.info("{}", matcher.matches() ? matcher.group(3) : line);
+                } else if (logger.isTraceEnabled()) {
                     Matcher matcher = LOG_PATTERN.matcher(line);
                     if (matcher.matches()) {
                         String component = matcher.group(2);
