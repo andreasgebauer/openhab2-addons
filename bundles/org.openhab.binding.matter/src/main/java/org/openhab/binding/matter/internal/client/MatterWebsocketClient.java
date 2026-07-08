@@ -105,10 +105,11 @@ public class MatterWebsocketClient implements WebSocketListener, MatterWebsocket
             .registerTypeAdapter(OctetString.class, new OctetStringDeserializer())
             .registerTypeAdapter(OctetString.class, new OctetStringSerializer()).create();
 
-    protected final WebSocketClient client = new WebSocketClient();
     protected final ConcurrentHashMap<String, CompletableFuture<JsonElement>> pendingRequests = new ConcurrentHashMap<>();
     protected final CopyOnWriteArrayList<MatterClientListener> clientListeners = new CopyOnWriteArrayList<>();
 
+    @Nullable
+    private WebSocketClient client;
     @Nullable
     private Session session;
     @Nullable
@@ -147,16 +148,12 @@ public class MatterWebsocketClient implements WebSocketListener, MatterWebsocket
             if (session != null && session.isOpen()) {
                 session.disconnect();
                 session.close();
-                session = null;
             }
+            this.session = null;
         } catch (IOException e) {
             logger.debug("Error trying to disconnect", e);
         } finally {
-            try {
-                client.stop();
-            } catch (Exception e) {
-                logger.debug("Error closing Web Socket", e);
-            }
+            stopClient();
             MatterWebsocketService wss = this.wss;
             if (wss != null) {
                 wss.removeProcessListener(this);
@@ -462,11 +459,26 @@ public class MatterWebsocketClient implements WebSocketListener, MatterWebsocket
         }
 
         logger.debug("Connecting {}", dest);
+        // stop any client left over from a previous connection, otherwise its thread pool leaks
+        stopClient();
         WebSocketClient client = new WebSocketClient();
         client.setMaxIdleTimeout(Long.MAX_VALUE);
+        this.client = client;
         client.start();
         URI uri = new URI(dest);
         client.connect(this, uri, new ClientUpgradeRequest()).get();
+    }
+
+    private void stopClient() {
+        WebSocketClient client = this.client;
+        this.client = null;
+        if (client != null) {
+            try {
+                client.stop();
+            } catch (Exception e) {
+                logger.debug("Error closing Web Socket", e);
+            }
+        }
     }
 
     @NonNullByDefault({})
