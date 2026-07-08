@@ -473,11 +473,16 @@ public class MatterWebsocketClient implements WebSocketListener, MatterWebsocket
         WebSocketClient client = this.client;
         this.client = null;
         if (client != null) {
-            try {
-                client.stop();
-            } catch (Exception e) {
-                logger.debug("Error closing Web Socket", e);
-            }
+            // Jetty's stop() joins the client's own thread pool. This method is reached from
+            // websocket callbacks (onWebSocketClose -> listener -> disconnect), where an inline
+            // stop() would block ~30s until Jetty's stop timeout interrupts the self-join.
+            scheduler.execute(() -> {
+                try {
+                    client.stop();
+                } catch (Exception e) {
+                    logger.debug("Error closing Web Socket", e);
+                }
+            });
         }
     }
 
