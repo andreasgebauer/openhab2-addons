@@ -66,17 +66,39 @@ export class ControllerNode {
     // and respawns a fresh matter.js engine (~10 s), which re-subscribes cleanly.
     private nodeLastAlive: Map<NodeId, number> = new Map();
     private nodeLastReconnect: Map<NodeId, number> = new Map();
+    // Timestamp (ms) of the last time a node re-entered `Connected` state. matter.js only reports
+    // Connected from `#handleSubscriptionStatusChanged(true)` / `#handleSubscriptionAlive()`, i.e.
+    // once a subscription is actually active - so a Connected transition *after* our forced
+    // reconnect is positive proof that the resubscribe was accepted and the matter.js engine is
+    // processing inbound traffic. That is the difference between "the device is quiet" and "the
+    // engine is wedged", and it must gate the process restart (see startWedgeWatchdog).
+    private nodeLastResubscribe: Map<NodeId, number> = new Map();
+    // Consecutive wedge episodes in which the forced resubscribe succeeded but the subscription
+    // still delivered no report within a full WEDGE_TIMEOUT_MS window. Reset on `connectionAlive`.
+    private nodeFutileResubscribes: Map<NodeId, number> = new Map();
     private wedgeWatchdog?: NodeJS.Timeout;
-    // No subscription update within this window on a still-Connected node => wedged. Must exceed
-    // the negotiated subscription maxInterval (observed ~15m39s for these IKEA sensors) plus margin.
+    // No subscription update within this window on a still-Connected node => possibly wedged. MUST
+    // exceed the negotiated subscription maxInterval plus margin, or the watchdog tears down healthy
+    // subscriptions on a timer and never lets the keep-alive arrive. These IKEA sensors negotiate
+    // `interval: 30m timeout: 30m 38s` (matter.js `Subscription successful` TRACE line), so the old
+    // 20 min - chosen from the ~15m39s figure in matterjs-server #526 - was BELOW the keep-alive
+    // cadence and guaranteed a permanent reconnect/restart loop on any quiet device (observed
+    // 2026-08-21: ~150 fires/day, matter-server killed every ~25 min around the clock).
     // Tunable; watch the matter.js log for `connectionAlive` cadence to refine.
-    private static readonly WEDGE_TIMEOUT_MS = 20 * 60 * 1000;
+    private static readonly WEDGE_TIMEOUT_MS = 40 * 60 * 1000;
     // Do not re-trigger a reconnect for the same node more often than this.
     private static readonly WEDGE_RECONNECT_COOLDOWN_MS = 10 * 60 * 1000;
     // After triggering the light reconnect, allow this long for `connectionAlive` to resume before
-    // escalating to a full process restart. Sized for an awake device's CASE re-handshake + first
-    // subscription report; if it has not delivered by then the wedge is hard, not transient.
+    // considering the process restart. Sized for an awake device's CASE re-handshake + first
+    // subscription report. NB this alone does not prove a wedge: a *successful* resubscribe to a
+    // quiet sleepy device legitimately delivers nothing for up to the negotiated maxInterval, which
+    // is why the restart is additionally gated on nodeLastResubscribe.
     private static readonly WEDGE_RESTART_GRACE_MS = 4 * 60 * 1000;
+    // How many consecutive episodes of "resubscribe succeeded, yet still no report a full
+    // WEDGE_TIMEOUT_MS later" to tolerate before treating it as a hard wedge after all. Keeps the
+    // process-restart safety net for the case where matter.js accepts the subscription but never
+    // delivers, without letting a merely-quiet device trigger it.
+    private static readonly WEDGE_MAX_FUTILE_RESUBSCRIBES = 2;
     private static readonly WEDGE_CHECK_INTERVAL_MS = 60 * 1000;
     commissioningController?: CommissioningController;
     private observers?: ObserverGroup;
@@ -133,6 +155,8 @@ export class ControllerNode {
             this.nodes.clear();
             this.nodeLastAlive.clear();
             this.nodeLastReconnect.clear();
+            this.nodeLastResubscribe.clear();
+            this.nodeFutileResubscribes.clear();
         }
     }
 
@@ -267,15 +291,19 @@ export class ControllerNode {
      * (no `connectionAlive` within WEDGE_TIMEOUT_MS). Two-stage recovery:
      *   1. Light reconnect (triggerReconnect) - rebuilds the CASE session + subscription in-process.
      *      Clears transient stalls cheaply, without disturbing the other nodes or the controller.
-     *   2. If `connectionAlive` is still silent WEDGE_RESTART_GRACE_MS after that reconnect, the wedge
-     *      is hard (the matter.js engine itself is stuck; a reconnect/websocket bounce cannot clear
-     *      it - confirmed 2026-06-19). Escalate to process.exit(1); MatterWebsocketService respawns a
+     *   2. WEDGE_RESTART_GRACE_MS later, if `connectionAlive` is still silent AND the forced
+     *      resubscribe never completed (the node did not re-enter Connected), the wedge is hard: the
+     *      matter.js engine itself is stuck and a reconnect/websocket bounce cannot clear it
+     *      (confirmed 2026-06-19). Escalate to process.exit(1); MatterWebsocketService respawns a
      *      fresh Node process and re-subscribes all nodes cleanly. This is the in-process equivalent
      *      of the openHAB-side node-PID-kill backstop, but faster and keyed off the reliable
      *      `connectionAlive` signal (immune to reconnect read-back bursts).
-     * The alive marker is deliberately NOT refreshed on a reconnect attempt, so a reconnect that
-     * superficially succeeds (node returns to Connected) but fails to resume real subscription
-     * delivery still escalates to the process restart.
+     * If the resubscribe DID complete, the engine is provably processing inbound traffic and the
+     * silence just means the sleepy device has nothing to report yet, so the node is granted a fresh
+     * WEDGE_TIMEOUT_MS window instead of a process restart. Only after
+     * WEDGE_MAX_FUTILE_RESUBSCRIBES such episodes back-to-back - a subscription that is repeatedly
+     * accepted yet never delivers - does it escalate anyway. Without that gate the watchdog kills a
+     * healthy engine every WEDGE_TIMEOUT_MS + grace forever (2026-08-21 regression).
      */
     private startWedgeWatchdog() {
         if (this.wedgeWatchdog) {
@@ -295,9 +323,31 @@ export class ControllerNode {
                 const lastReconnect = this.nodeLastReconnect.get(nodeId) ?? 0;
 
                 // Stage 2: a light reconnect was already attempted and the subscription is still
-                // silent a grace window later => hard wedge. Only a fresh matter.js process recovers
-                // it, so exit and let MatterWebsocketService respawn one.
+                // silent a grace window later. Before calling that a hard wedge, check whether the
+                // resubscribe actually succeeded: if the node re-entered Connected after the
+                // reconnect, matter.js negotiated a fresh subscription and is demonstrably
+                // processing inbound traffic, so the engine is NOT wedged - the device is simply
+                // quiet, and killing the process here would destroy every CASE session and
+                // subscription for nothing (the 2026-08-21 kill loop).
                 if (lastReconnect !== 0 && now - lastReconnect >= ControllerNode.WEDGE_RESTART_GRACE_MS) {
+                    const lastResubscribe = this.nodeLastResubscribe.get(nodeId) ?? 0;
+                    if (lastResubscribe >= lastReconnect) {
+                        const futile = (this.nodeFutileResubscribes.get(nodeId) ?? 0) + 1;
+                        this.nodeFutileResubscribes.set(nodeId, futile);
+                        if (futile < ControllerNode.WEDGE_MAX_FUTILE_RESUBSCRIBES) {
+                            logger.warn(
+                                `Wedge watchdog: node ${nodeId} resubscribed successfully after the forced reconnect but has delivered no report for ${staleMin} min (episode ${futile}/${ControllerNode.WEDGE_MAX_FUTILE_RESUBSCRIBES}) - the engine is alive, so not restarting it; granting another full window`,
+                            );
+                            // Fresh window: the new subscription's keep-alive is due within its
+                            // negotiated maxInterval, which WEDGE_TIMEOUT_MS now sits above.
+                            this.nodeLastAlive.set(nodeId, now);
+                            this.nodeLastReconnect.delete(nodeId);
+                            continue;
+                        }
+                        logger.warn(
+                            `Wedge watchdog: node ${nodeId} has now resubscribed successfully ${futile}x without ever delivering a report - treating as a hard wedge after all`,
+                        );
+                    }
                     logger.warn(
                         `Wedge watchdog: node ${nodeId} still silent ${staleMin} min after reconnect - matter.js engine is wedged, restarting the matter-server process (process.exit) so the binding respawns a clean one`,
                     );
@@ -431,10 +481,17 @@ export class ControllerNode {
             // Liveness resumed: clear any in-progress wedge escalation so the next episode starts
             // fresh with the light reconnect before escalating to a process restart.
             this.nodeLastReconnect.delete(node!.nodeId);
+            this.nodeFutileResubscribes.delete(node!.nodeId);
             logger.debug(`connectionAlive node ${node!.nodeId}`);
         });
 
         observers.on(node.events.stateChanged, info => {
+            if (info === NodeStates.Connected) {
+                // matter.js reports Connected only once a subscription is active, so this doubles as
+                // the "resubscribe accepted" signal the wedge watchdog needs to distinguish a quiet
+                // device from a wedged engine.
+                this.nodeLastResubscribe.set(node!.nodeId, Date.now());
+            }
             this.ws.sendEvent(EventType.NodeStateInformation, {
                 nodeId: node!.nodeId,
                 state: NodeStates[info],
